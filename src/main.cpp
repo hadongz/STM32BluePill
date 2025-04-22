@@ -282,14 +282,14 @@ void setup() {
 void loop() {
   // Skip if DMP not ready
   if (!dmpReady) return;
-  
-  // Update BMP readings (non-blocking)
-  updateBMP();
 
   if (overflowBlinkCount > 0) {
     overflowBlink();
   }
   
+  // Update BMP readings (non-blocking)
+  updateBMP();
+
   // Process MPU data if available
   if (mpuInterrupt || fifoCount >= packetSize) {
     processMPU();
