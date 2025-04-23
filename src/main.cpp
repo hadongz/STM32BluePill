@@ -5,13 +5,14 @@
 #include <MPU6050_6Axis_MotionApps20.h>
 
 // ===== CONFIGURATION =====
-#define LED_PIN         PC13    // Onboard LED
-#define MPU_INT_PIN     PA0     // Interrupt pin for MPU6050
-#define SERIAL_SPEED    115200  // Serial communication speed
-#define PRINT_INTERVAL  10     // How often to print data (ms)
-#define OVERFLOW_LED_ON_TIME 100 // LED on time in ms
-#define OVERFLOW_LED_OFF_TIME 100 // LED off time in ms
-#define OVERFLOW_BLINK_COUNT 5 // Number of blinks for overflow indicator
+#define LED_PIN                 PC13    // Onboard LED
+#define MPU_INT_PIN             PA0     // Interrupt pin for MPU6050
+#define SERIAL_SPEED            115200  // Serial communication speed
+#define PRINT_INTERVAL          10      // How often to print data (ms)
+#define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
+#define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
+#define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
+#define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
@@ -25,9 +26,8 @@ uint16_t packetSize;
 uint16_t fifoCount;
 uint8_t fifoBuffer[64];
 Quaternion q;
-Quaternion rotation;
-Quaternion rotated;
 VectorFloat gravity;
+float ypr[3];
 volatile bool mpuInterrupt = false;
 unsigned long lastPrintTime = 0;
 
@@ -56,7 +56,6 @@ int32_t altitude = 0;
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
 void errorBlink(uint8_t blinks);
-String getOrientation(const Quaternion& q);
 void updateBMP();
 void processMPU();
 void printData();
@@ -95,27 +94,6 @@ void overflowBlink() {
     ledState = true;
     ledBlinkTime = currentMillis;
     overflowBlinkCount--;
-  }
-}
-
-// ===== ORIENTATION DETECTION =====
-String getOrientation(const Quaternion& q) {
-  // Calculate gravity vector from quaternion
-  float gx = 2 * (q.x * q.z - q.w * q.y);
-  float gy = 2 * (q.w * q.x + q.y * q.z);
-  float gz = q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z;
-  
-  // Find dominant axis
-  float absX = abs(gx);
-  float absY = abs(gy);
-  float absZ = abs(gz);
-  
-  if (absZ > absX && absZ > absY) {
-    return gz > 0 ? "Flat" : "Upside down";
-  } else if (absY > absX) {
-    return gy > 0 ? "Left side up" : "Right side up";
-  } else {
-    return gx > 0 ? "Front side up" : "Back side up";
   }
 }
 
@@ -173,6 +151,12 @@ void processMPU() {
       ledBlinkTime = millis();
     }
 
+    // Important: Re-enable DMP after overflow to ensure we get new interrupts
+    mpu.setDMPEnabled(false);
+    delay(5);  // Short delay to ensure settings take effect
+    mpu.resetFIFO();  // Reset FIFO again to ensure clean state
+    mpu.setDMPEnabled(true);
+
     return;
   }
   
@@ -186,16 +170,10 @@ void processMPU() {
   mpu.getFIFOBytes(fifoBuffer, packetSize);
   fifoCount -= packetSize;
   
-  // Get quaternion
+  // Get quaternion, gravity and Yaw Pitch Roll
   mpu.dmpGetQuaternion(&q, fifoBuffer);
-
-  // Apply rotation (quaternion multiplication)
-  rotated.w = q.w * rotation.w - q.x * rotation.x - q.y * rotation.y - q.z * rotation.z;
-  rotated.x = q.w * rotation.x + q.x * rotation.w + q.y * rotation.z - q.z * rotation.y;
-  rotated.y = q.w * rotation.y - q.x * rotation.z + q.y * rotation.w + q.z * rotation.x;
-  rotated.z = q.w * rotation.z + q.x * rotation.y - q.y * rotation.x + q.z * rotation.w;
-
-  q = rotated;
+  mpu.dmpGetGravity(&gravity, &q);
+  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 }
 
 // ===== DATA PRINTING =====
@@ -205,21 +183,33 @@ void printData() {
   // Print at regular intervals
   if (currentMillis - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = currentMillis;
-    // Print quaternion values
-    Serial.print("quat\t");
-    Serial.print(q.w); Serial.print("\t");
-    Serial.print(q.x); Serial.print("\t");
-    Serial.print(q.y); Serial.print("\t");
-    Serial.print(q.z); Serial.print("\t| ");
-        
-    // Print orientation using the rotated quaternion
-    Serial.print("Orientation: ");
-    Serial.print(getOrientation(rotated));
-    
-    // Print MPU data
-    Serial.print("Orientation: ");
-    Serial.print(getOrientation(q));
 
+    // Print quaternion values
+    Serial.print("QUATERNION \t");
+    Serial.print("W "); Serial.print(q.w); Serial.print("\t");
+    Serial.print("X "); Serial.print(q.x); Serial.print("\t");
+    Serial.print("Y "); Serial.print(q.y); Serial.print("\t");
+    Serial.print("Z "); Serial.print(q.z); Serial.print("\t| ");
+    
+    // Serial.print("GRAVITY \t");
+    // Serial.print("X "); Serial.print(gravity.x); Serial.print("\t");
+    // Serial.print("Y "); Serial.print(gravity.y); Serial.print("\t");
+    // Serial.print("Z "); Serial.print(gravity.z); Serial.print("\r");
+
+    // Serial.print("YAW PITCH ROLL \t");
+    // Serial.print("YAW "); Serial.print(ypr[0] * RAD_TO_DEG); Serial.print("\t");
+    // Serial.print("PITCH "); Serial.print(ypr[1] * RAD_TO_DEG); Serial.print("\t");
+    // Serial.print("ROLL "); Serial.print(ypr[2] * RAD_TO_DEG); Serial.print("\r");
+
+    // Print orientation using the rotated quaternion
+    // Serial.print("Orientation: ");
+    // Serial.print(getOrientation(rotated));
+    
+    // // Print MPU data
+    // Serial.print("Orientation: ");
+    // Serial.print(getOrientation(q));
+
+    // Print BMP data
     Serial.print(" | Temp: ");
     Serial.print(temperature, 1);
     Serial.print("°C | Pressure: ");
@@ -238,7 +228,7 @@ void setup() {
 
   // Initialize communication
   Wire.begin();
-  Wire.setClock(400000);
+  Wire.setClock(100000);
   Serial.begin(SERIAL_SPEED);
   
   // Initialize MPU6050
@@ -255,9 +245,31 @@ void setup() {
   
   // Initialize DMP
   devStatus = mpu.dmpInitialize();
+
+  mpu.setXGyroOffset(1);
+  mpu.setYGyroOffset(64);
+  mpu.setZGyroOffset(-31);
+  mpu.setXAccelOffset(718);
+  mpu.setYAccelOffset(-1734);
+  mpu.setZAccelOffset(972);
   
   if (devStatus == 0) {
-    // Enable DMP
+    #if CALIBRATE
+      mpu.CalibrateAccel(7);
+      mpu.CalibrateGyro(7);
+
+      Serial.println("Calibration complete!");
+      Serial.print("Accel offsets: ");
+      Serial.print(mpu.getXAccelOffset()); Serial.print(", ");
+      Serial.print(mpu.getYAccelOffset()); Serial.print(", ");
+      Serial.println(mpu.getZAccelOffset());
+      
+      Serial.print("Gyro offsets: ");
+      Serial.print(mpu.getXGyroOffset()); Serial.print(", ");
+      Serial.print(mpu.getYGyroOffset()); Serial.print(", ");
+      Serial.println(mpu.getZGyroOffset());
+    #endif
+
     mpu.setDMPEnabled(true);
     
     // Enable interrupt detection
@@ -267,11 +279,6 @@ void setup() {
     // Set DMP ready flag
     dmpReady = true;
     packetSize = mpu.dmpGetFIFOPacketSize();
-
-    rotation.w = cos(PI/4); 
-    rotation.x = 0;
-    rotation.y = 0;
-    rotation.z = sin(PI/4); 
   } else {
     // ERROR!
     errorBlink(4);
