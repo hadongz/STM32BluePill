@@ -201,22 +201,14 @@ void printData() {
     // Serial.print("PITCH "); Serial.print(ypr[1] * RAD_TO_DEG); Serial.print("\t");
     // Serial.print("ROLL "); Serial.print(ypr[2] * RAD_TO_DEG); Serial.print("\r");
 
-    // Print orientation using the rotated quaternion
-    // Serial.print("Orientation: ");
-    // Serial.print(getOrientation(rotated));
-    
-    // // Print MPU data
-    // Serial.print("Orientation: ");
-    // Serial.print(getOrientation(q));
-
     // Print BMP data
-    Serial.print(" | Temp: ");
-    Serial.print(temperature, 1);
-    Serial.print("°C | Pressure: ");
-    Serial.print(pressure/100.0, 1); // Convert to hPa
-    Serial.print("hPa | Alt: ");
-    Serial.print(altitude);
-    Serial.println("m");
+    // Serial.print(" | Temp: ");
+    // Serial.print(temperature, 1);
+    // Serial.print("°C | Pressure: ");
+    // Serial.print(pressure/100.0, 1); // Convert to hPa
+    // Serial.print("hPa | Alt: ");
+    // Serial.print(altitude);
+    // Serial.println("m");
   }
 }
 
