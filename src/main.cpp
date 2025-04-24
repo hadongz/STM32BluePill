@@ -3,20 +3,28 @@
 #include <I2Cdev.h>
 #include <BMP085.h>
 #include <MPU6050_6Axis_MotionApps20.h>
+#include <Servo.h>
 
-// ===== CONFIGURATION =====
+// ===== PIN CONFIGURATION =====
 #define LED_PIN                 PC13    // Onboard LED
 #define MPU_INT_PIN             PA0     // Interrupt pin for MPU6050
+#define ESC_PIN_1               PA8
+
+// ===== CONFIGURATION =====
 #define SERIAL_SPEED            115200  // Serial communication speed
 #define PRINT_INTERVAL          10      // How often to print data (ms)
 #define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
 #define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
+#define ESC_ARMING_TIME         3000    // Time to wait for ESC to arm
+#define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
+#define ESC_MAX_ERROR           5       // Error count before locking up
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
 BMP085 bmp;
+Servo esc1;
 
 // ===== MPU6050 VARIABLES =====
 bool dmpReady = false;
@@ -53,6 +61,27 @@ float temperature = 0;
 float pressure = 0;
 int32_t altitude = 0;
 
+// ===== ESC VARIABLES =====
+enum ESCState {
+  ESC_INIT,
+  ESC_ARMING,
+  ESC_READY,
+  ESC_ERROR,
+  ESC_RECOVERY
+};
+
+struct ESCStatus {
+  ESCState state;
+  unsigned long responseLastTime;
+  bool connected;
+  uint8_t pin;
+  uint8_t errorCount;
+};
+
+ESCStatus escStatus[1];
+ESCState escSystemState = ESC_INIT;
+unsigned long escLastTime = 0;
+
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
 void errorBlink(uint8_t blinks);
@@ -60,6 +89,11 @@ void updateBMP();
 void processMPU();
 void printData();
 void overflowBlink();
+void initializeESCs();
+void setupESCs();
+void checkESCsConnection();
+void recoverESCs();
+void shutdownESCs();
 
 // ===== INTERRUPT HANDLER =====
 void dmpDataReady() {
@@ -94,6 +128,113 @@ void overflowBlink() {
     ledState = true;
     ledBlinkTime = currentMillis;
     overflowBlinkCount--;
+  }
+}
+
+// ===== NON-BLOCK ESC SETUP AND UPDATE
+void initializeESCs() {
+  escStatus[0] = {ESC_INIT, 0, false, ESC_PIN_1, 0};
+
+  escSystemState = ESC_INIT;
+  escLastTime = millis();
+}
+
+void setupESCs() {
+  esc1.attach(escStatus[0].pin);
+
+  esc1.writeMicroseconds(1000);
+
+  for (size_t i = 0; i < 1; i++) {
+    escStatus[i].responseLastTime = millis();
+    escStatus[i].connected = true;
+    escStatus[i].state = ESC_ARMING;
+  }
+
+  escSystemState = ESC_ARMING;
+  escLastTime = millis();
+}
+
+void checkESCsConnection() {
+  // TODO: NEED SEPERATE HARDWARE TO CHECK CONNECTION FOR PWM
+}
+
+void recoverESCs() {
+  bool allConnected = true;
+  bool anyRecovery = false;
+
+  for (size_t i = 0; i < 1; i++) {
+    if (!escStatus[i].connected) {
+      allConnected = false;
+    }
+
+    if (escStatus[i].state == ESC_RECOVERY) {
+      anyRecovery = true;
+
+      switch (i) {
+        case 0:
+          esc1.attach(escStatus[i].pin);
+          esc1.writeMicroseconds(1000);
+          break;
+      }
+    }
+
+    if (escStatus[i].errorCount >= ESC_MAX_ERROR) {
+      escStatus[i].state = ESC_ERROR;
+    } else {
+      escStatus[i].state = ESC_ARMING;
+    }
+  }
+
+  if (allConnected && !anyRecovery) {
+    escSystemState = ESC_ARMING;
+    escLastTime = millis();
+  }
+}
+
+void shutdownESCs() {
+  esc1.writeMicroseconds(1000);
+}
+
+void updateESCs() {
+  unsigned long currentMillis = millis();
+
+  checkESCsConnection();
+
+  switch (escSystemState) {
+    case ESC_INIT:
+      setupESCs();
+      break;
+    case ESC_ARMING:
+      if (currentMillis - escLastTime >= ESC_ARMING_TIME) {
+        escSystemState = ESC_READY;
+        escLastTime = currentMillis;
+        for (size_t i = 0; i < 1; i++) {
+          escStatus[i].state = ESC_READY;
+          escStatus[i].errorCount = 0;
+          escStatus[i].responseLastTime = millis();
+        }
+      }
+      break;
+    case ESC_READY:
+      if (!dmpReady) return;
+      esc1.writeMicroseconds(1200);
+      break;
+    case ESC_RECOVERY:
+      recoverESCs();
+      // Timeout if recovery takes too long
+      if (currentMillis - escLastTime >= ESC_RECOVERY_TIMEOUT) {
+        escSystemState = ESC_ERROR;
+        escLastTime = currentMillis;
+      }
+      break;
+    case ESC_ERROR:
+      shutdownESCs();
+
+      if (currentMillis - escLastTime >= ESC_RECOVERY_TIMEOUT) {
+        escSystemState = ESC_RECOVERY;
+        escLastTime = currentMillis;
+      }
+      break;
   }
 }
 
@@ -189,7 +330,7 @@ void printData() {
     Serial.print("W "); Serial.print(q.w); Serial.print("\t");
     Serial.print("X "); Serial.print(q.x); Serial.print("\t");
     Serial.print("Y "); Serial.print(q.y); Serial.print("\t");
-    Serial.print("Z "); Serial.print(q.z); Serial.print("\t| ");
+    Serial.print("Z "); Serial.print(q.z); Serial.print("\n ");
     
     // Serial.print("GRAVITY \t");
     // Serial.print("X "); Serial.print(gravity.x); Serial.print("\t");
@@ -237,6 +378,9 @@ void setup() {
   
   // Initialize DMP
   devStatus = mpu.dmpInitialize();
+
+  // Initialize ESCs
+  initializeESCs();
 
   mpu.setXGyroOffset(1);
   mpu.setYGyroOffset(64);
@@ -288,6 +432,9 @@ void loop() {
   
   // Update BMP readings (non-blocking)
   updateBMP();
+
+  // Update ESC (non-blocking)
+  updateESCs();
 
   // Process MPU data if available
   if (mpuInterrupt || fifoCount >= packetSize) {
