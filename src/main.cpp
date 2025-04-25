@@ -12,14 +12,23 @@
 
 // ===== CONFIGURATION =====
 #define SERIAL_SPEED            115200  // Serial communication speed
-#define PRINT_INTERVAL          10      // How often to print data (ms)
+#define PRINT_INTERVAL          50      // How often to print data (ms)
+#define PRINT_QUATERNION        0       // Enable / disable print quaternion
+#define PRINT_GRAVITY           0       // Enable / disable print gravity
+#define PRINT_YAW_PITCH_ROLL    0       // Enable / disable print ypr
+#define PRINT_BMP_DATA          0       // Enable / disable print BMP
+#define PRINT_CORRECTION        0       // Enable / disable print PID control correction
 #define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
 #define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
+#define ENABLE_ESC              0       // Turn on / off ESC control
 #define ESC_ARMING_TIME         3000    // Time to wait for ESC to arm
 #define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
 #define ESC_MAX_ERROR           5       // Error count before locking up
+#define MOTOR_BASE_SPEED        1200    // Base speed for motor to run (min 1200 to spin)
+#define MOTOR_MAX_SPEED         1500    // Max speed for motor (can go up to 2200)
+#define P_Value                 0.2f    // Propotional value control
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
@@ -82,6 +91,11 @@ ESCStatus escStatus[1];
 ESCState escSystemState = ESC_INIT;
 unsigned long escLastTime = 0;
 
+// ===== CONTROL VARIABLES =====
+Quaternion qTarget;
+VectorFloat qAxis;
+float qAngle;
+
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
 void errorBlink(uint8_t blinks);
@@ -131,6 +145,42 @@ void overflowBlink() {
   }
 }
 
+// ===== CONTROL SYSTEM =====
+void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &angle) {
+  angle = 2.0f * acos(quat.w);
+  float s = sqrt(1.0f - quat.w * quat.w);
+  if (s < 0.0001f) {
+    axis.x = 1.0f;
+    axis.y = 0.0f;
+    axis.z = 0.0f;
+  } else {
+    axis.x = quat.x / s;
+    axis.y = quat.y / s;
+    axis.z = quat.z / s;
+  }
+}
+
+void applyControl() {
+  Quaternion conjugate = q.getConjugate();
+  conjugate.normalize();
+  Quaternion qError = qTarget.getProduct(conjugate);
+
+  quaternionToAxisAngle(qError, qAxis, qAngle);
+
+  float rollCorrection = qAxis.x * qAngle * P_Value * 300;
+
+  int esc1Speed = constrain(
+    MOTOR_BASE_SPEED - rollCorrection, 
+    MOTOR_BASE_SPEED, 
+    MOTOR_MAX_SPEED
+  );
+
+  esc1.writeMicroseconds(esc1Speed);
+
+
+
+}
+
 // ===== NON-BLOCK ESC SETUP AND UPDATE
 void initializeESCs() {
   escStatus[0] = {ESC_INIT, 0, false, ESC_PIN_1, 0};
@@ -173,7 +223,7 @@ void recoverESCs() {
       switch (i) {
         case 0:
           esc1.attach(escStatus[i].pin);
-          esc1.writeMicroseconds(1000);
+          esc1.writeMicroseconds(MOTOR_BASE_SPEED);
           break;
       }
     }
@@ -217,7 +267,7 @@ void updateESCs() {
       break;
     case ESC_READY:
       if (!dmpReady) return;
-      esc1.writeMicroseconds(1200);
+      applyControl();
       break;
     case ESC_RECOVERY:
       recoverESCs();
@@ -313,8 +363,11 @@ void processMPU() {
   
   // Get quaternion, gravity and Yaw Pitch Roll
   mpu.dmpGetQuaternion(&q, fifoBuffer);
+  q.normalize();
+  #if PRINT_GRAVITY
   mpu.dmpGetGravity(&gravity, &q);
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+  #endif
 }
 
 // ===== DATA PRINTING =====
@@ -325,31 +378,47 @@ void printData() {
   if (currentMillis - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = currentMillis;
 
-    // Print quaternion values
+    #if PRINT_QUATERNION
     Serial.print("QUATERNION \t");
     Serial.print("W "); Serial.print(q.w); Serial.print("\t");
     Serial.print("X "); Serial.print(q.x); Serial.print("\t");
     Serial.print("Y "); Serial.print(q.y); Serial.print("\t");
-    Serial.print("Z "); Serial.print(q.z); Serial.print("\n ");
+    Serial.print("Z "); Serial.print(q.z); Serial.print("\t | ");
+    #endif
+
+    #if PRINT_CORRECTION
+    Serial.print("Correction "); Serial.print(rollCorrection); Serial.print("\t");
+    Serial.print("X "); Serial.print(axis.x); Serial.print("\t");
+    Serial.print("Y "); Serial.print(axis.y); Serial.print("\t");
+    Serial.print("Z "); Serial.print(axis.z); Serial.print("\t");
+    Serial.print("ANGLE "); Serial.print(angle); Serial.print("\t | ");
+    #endif
     
-    // Serial.print("GRAVITY \t");
-    // Serial.print("X "); Serial.print(gravity.x); Serial.print("\t");
-    // Serial.print("Y "); Serial.print(gravity.y); Serial.print("\t");
-    // Serial.print("Z "); Serial.print(gravity.z); Serial.print("\r");
+    #if PRINT_GRAVITY
+    Serial.print("GRAVITY \t");
+    Serial.print("X "); Serial.print(gravity.x); Serial.print("\t");
+    Serial.print("Y "); Serial.print(gravity.y); Serial.print("\t");
+    Serial.print("Z "); Serial.print(gravity.z); Serial.print("\t | ");
+    #endif
 
-    // Serial.print("YAW PITCH ROLL \t");
-    // Serial.print("YAW "); Serial.print(ypr[0] * RAD_TO_DEG); Serial.print("\t");
-    // Serial.print("PITCH "); Serial.print(ypr[1] * RAD_TO_DEG); Serial.print("\t");
-    // Serial.print("ROLL "); Serial.print(ypr[2] * RAD_TO_DEG); Serial.print("\r");
+    #if PRINT_YAW_PITCH_ROLL
+    Serial.print("YAW PITCH ROLL \t");
+    Serial.print("YAW "); Serial.print(ypr[0] * RAD_TO_DEG); Serial.print("\t");
+    Serial.print("PITCH "); Serial.print(ypr[1] * RAD_TO_DEG); Serial.print("\t");
+    Serial.print("ROLL "); Serial.print(ypr[2] * RAD_TO_DEG); Serial.print("\t | ");
+    #endif
 
-    // Print BMP data
-    // Serial.print(" | Temp: ");
-    // Serial.print(temperature, 1);
-    // Serial.print("°C | Pressure: ");
-    // Serial.print(pressure/100.0, 1); // Convert to hPa
-    // Serial.print("hPa | Alt: ");
-    // Serial.print(altitude);
-    // Serial.println("m");
+    #if PRINT_BMP_DATA
+    Serial.print("Temp: ");
+    Serial.print(temperature, 1);
+    Serial.print("°C Pressure: ");
+    Serial.print(pressure/100.0, 1); // Convert to hPa
+    Serial.print("hPa Alt: ");
+    Serial.print(altitude);
+    Serial.print("m");
+    #endif
+
+    Serial.print("\n");
   }
 }
 
@@ -380,7 +449,9 @@ void setup() {
   devStatus = mpu.dmpInitialize();
 
   // Initialize ESCs
+  #if ENABLE_ESC
   initializeESCs();
+  #endif
 
   mpu.setXGyroOffset(1);
   mpu.setYGyroOffset(64);
@@ -391,19 +462,19 @@ void setup() {
   
   if (devStatus == 0) {
     #if CALIBRATE
-      mpu.CalibrateAccel(7);
-      mpu.CalibrateGyro(7);
+    mpu.CalibrateAccel(7);
+    mpu.CalibrateGyro(7);
 
-      Serial.println("Calibration complete!");
-      Serial.print("Accel offsets: ");
-      Serial.print(mpu.getXAccelOffset()); Serial.print(", ");
-      Serial.print(mpu.getYAccelOffset()); Serial.print(", ");
-      Serial.println(mpu.getZAccelOffset());
+    Serial.println("Calibration complete!");
+    Serial.print("Accel offsets: ");
+    Serial.print(mpu.getXAccelOffset()); Serial.print(", ");
+    Serial.print(mpu.getYAccelOffset()); Serial.print(", ");
+    Serial.println(mpu.getZAccelOffset());
       
-      Serial.print("Gyro offsets: ");
-      Serial.print(mpu.getXGyroOffset()); Serial.print(", ");
-      Serial.print(mpu.getYGyroOffset()); Serial.print(", ");
-      Serial.println(mpu.getZGyroOffset());
+    Serial.print("Gyro offsets: ");
+    Serial.print(mpu.getXGyroOffset()); Serial.print(", ");
+    Serial.print(mpu.getYGyroOffset()); Serial.print(", ");
+    Serial.println(mpu.getZGyroOffset());
     #endif
 
     mpu.setDMPEnabled(true);
@@ -433,8 +504,10 @@ void loop() {
   // Update BMP readings (non-blocking)
   updateBMP();
 
+  #if ENABLE_ESC
   // Update ESC (non-blocking)
   updateESCs();
+  #endif
 
   // Process MPU data if available
   if (mpuInterrupt || fifoCount >= packetSize) {
