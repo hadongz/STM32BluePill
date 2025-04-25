@@ -176,9 +176,6 @@ void applyControl() {
   );
 
   esc1.writeMicroseconds(esc1Speed);
-
-
-
 }
 
 // ===== NON-BLOCK ESC SETUP AND UPDATE
