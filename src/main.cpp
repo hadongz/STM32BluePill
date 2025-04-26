@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <I2Cdev.h>
 #include <BMP085.h>
-#include <MPU6050_6Axis_MotionApps20.h>
+#include <MPU6050_6Axis_MotionApps612.h>
 #include <Servo.h>
 
 // ===== PIN CONFIGURATION =====
@@ -22,13 +22,17 @@
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
 #define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
-#define ENABLE_ESC              0       // Turn on / off ESC control
+#define ENABLE_ESC              1       // Turn on / off ESC control
 #define ESC_ARMING_TIME         3000    // Time to wait for ESC to arm
 #define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
 #define ESC_MAX_ERROR           5       // Error count before locking up
 #define MOTOR_BASE_SPEED        1200    // Base speed for motor to run (min 1200 to spin)
 #define MOTOR_MAX_SPEED         1500    // Max speed for motor (can go up to 2200)
-#define P_Value                 0.2f    // Propotional value control
+#define P_VALUE                 0.5f    // Propotional value control
+#define I_VALUE                 0.1f    // Integral value control
+#define I_MAX                   0.5f    // Maximum integral temr
+#define D_VALUE                 0.1f    // Derivative value control
+#define D_ALPHA                 0.7f    // Filter coefficient
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
@@ -95,6 +99,9 @@ unsigned long escLastTime = 0;
 Quaternion qTarget;
 VectorFloat qAxis;
 float qAngle;
+float I_rollError = 0.0f;
+float previousRollError = 0.0f;
+float lastUpdateErrorTime = 0.0f;
 
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
@@ -108,6 +115,8 @@ void setupESCs();
 void checkESCsConnection();
 void recoverESCs();
 void shutdownESCs();
+void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &angle);
+void applyControl();
 
 // ===== INTERRUPT HANDLER =====
 void dmpDataReady() {
@@ -161,21 +170,69 @@ void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &ang
 }
 
 void applyControl() {
+  float currentTime = millis() / 1000.0f;
+  float dt = currentTime - lastUpdateErrorTime;
+  lastUpdateErrorTime = currentTime;
+
+  if (dt > 0.1f) {
+    dt = 0.01f;  // Default to typical refresh rate
+  }
+
+  // Quaternion process to get rotaion difference from target
   Quaternion conjugate = q.getConjugate();
   conjugate.normalize();
   Quaternion qError = qTarget.getProduct(conjugate);
 
+  // Convert to X, Y, Z axis and get the angle
   quaternionToAxisAngle(qError, qAxis, qAngle);
 
-  float rollCorrection = qAxis.x * qAngle * P_Value * 300;
+  // Calculate the error
+  float rollError = qAxis.x * qAngle;
+
+  // Get P Error
+  float P_rollCorrection = rollError * P_VALUE;
+
+  // Get I Error
+  I_rollError += rollError * dt;
+  I_rollError = constrain(I_rollError, -I_MAX, I_MAX); // Anti-windup
+  float I_rollCorrection = I_rollError * I_VALUE;
+
+  // Get D Error
+  float D_rollError = (rollError - previousRollError) / dt;
+  float filteredDerivative = D_ALPHA * filteredDerivative + (1-D_ALPHA) * D_rollError; // Apply low-pass filter to derivative
+  float D_rollCorrection = filteredDerivative * D_VALUE;
+    
+  // Store current error for next iteration
+  previousRollError = rollError;
+
+  // PID sum with times scale (adjustable)
+  float rollCorrection = (P_rollCorrection + I_rollCorrection + D_rollCorrection) * 300;
 
   int esc1Speed = constrain(
-    MOTOR_BASE_SPEED - rollCorrection, 
+    MOTOR_BASE_SPEED + rollCorrection, 
     MOTOR_BASE_SPEED, 
     MOTOR_MAX_SPEED
   );
 
   esc1.writeMicroseconds(esc1Speed);
+
+  #if PRINT_CORRECTION
+  float _currentTime = millis();
+  if (_currentTime - lastPrintTime >= PRINT_INTERVAL) {
+    lastPrintTime = _currentTime;
+    
+    Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
+    Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
+    Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
+    Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
+    Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
+    Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
+    Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
+    Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
+    Serial.print("ESC SPEED "); Serial.print(esc1Speed); Serial.print(" | ");
+    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
+  }
+  #endif
 }
 
 // ===== NON-BLOCK ESC SETUP AND UPDATE
@@ -383,14 +440,6 @@ void printData() {
     Serial.print("Z "); Serial.print(q.z); Serial.print("\t | ");
     #endif
 
-    #if PRINT_CORRECTION
-    Serial.print("Correction "); Serial.print(rollCorrection); Serial.print("\t");
-    Serial.print("X "); Serial.print(axis.x); Serial.print("\t");
-    Serial.print("Y "); Serial.print(axis.y); Serial.print("\t");
-    Serial.print("Z "); Serial.print(axis.z); Serial.print("\t");
-    Serial.print("ANGLE "); Serial.print(angle); Serial.print("\t | ");
-    #endif
-    
     #if PRINT_GRAVITY
     Serial.print("GRAVITY \t");
     Serial.print("X "); Serial.print(gravity.x); Serial.print("\t");
@@ -415,7 +464,9 @@ void printData() {
     Serial.print("m");
     #endif
 
+    #if PRINT_QUATERNION || PRINT_YAW_PITCH_ROLL || PRINT_GRAVITY || PRINT_BMP_DATA
     Serial.print("\n");
+    #endif
   }
 }
 
