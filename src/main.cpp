@@ -13,26 +13,27 @@
 // ===== CONFIGURATION =====
 #define SERIAL_SPEED            115200  // Serial communication speed
 #define PRINT_INTERVAL          50      // How often to print data (ms)
-#define PRINT_QUATERNION        0       // Enable / disable print quaternion
+#define PRINT_QUATERNION        1       // Enable / disable print quaternion
 #define PRINT_GRAVITY           0       // Enable / disable print gravity
 #define PRINT_YAW_PITCH_ROLL    0       // Enable / disable print ypr
 #define PRINT_BMP_DATA          0       // Enable / disable print BMP
-#define PRINT_CORRECTION        0       // Enable / disable print PID control correction
+#define PRINT_CORRECTION        1       // Enable / disable print PID control correction
 #define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
 #define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
 #define ENABLE_ESC              1       // Turn on / off ESC control
+#define ENABLE_BMP              0       // Turn on / off BMP
 #define ESC_ARMING_TIME         3000    // Time to wait for ESC to arm
 #define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
 #define ESC_MAX_ERROR           5       // Error count before locking up
 #define MOTOR_BASE_SPEED        1200    // Base speed for motor to run (min 1200 to spin)
 #define MOTOR_MAX_SPEED         1500    // Max speed for motor (can go up to 2200)
-#define P_VALUE                 0.5f    // Propotional value control
-#define I_VALUE                 0.1f    // Integral value control
-#define I_MAX                   0.5f    // Maximum integral temr
-#define D_VALUE                 0.1f    // Derivative value control
-#define D_ALPHA                 0.7f    // Filter coefficient
+#define P_VALUE                 0.6f    // Propotional value control
+#define I_VALUE                 0.2f   // Integral value control
+#define I_MAX                   0.6f   // Maximum integral temr
+#define D_VALUE                 0.3f   // Derivative value control
+#define D_ALPHA                 0.8f   // Filter coefficient
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
@@ -100,7 +101,9 @@ Quaternion qTarget;
 VectorFloat qAxis;
 float qAngle;
 float I_rollError = 0.0f;
+float I_pitchError = 0.0f;
 float previousRollError = 0.0f;
+float previousPitchError = 0.0f;
 float lastUpdateErrorTime = 0.0f;
 
 // ===== FUNCTION PROTOTYPES =====
@@ -188,54 +191,78 @@ void applyControl() {
 
   // Calculate the error
   float rollError = qAxis.x * qAngle;
+  float pitchError = qAxis.y * qAngle;
 
   // Get P Error
   float P_rollCorrection = rollError * P_VALUE;
+  float P_pitchCorrection = pitchError * P_VALUE;
 
   // Get I Error
   I_rollError += rollError * dt;
+  I_pitchError += pitchError * dt;
   I_rollError = constrain(I_rollError, -I_MAX, I_MAX); // Anti-windup
+  I_pitchError = constrain(I_pitchError, -I_MAX, I_MAX); // Anti-windup
   float I_rollCorrection = I_rollError * I_VALUE;
+  float I_pitchCorrection = I_pitchError * I_VALUE;
 
   // Get D Error
   float D_rollError = (rollError - previousRollError) / dt;
-  float filteredDerivative = D_ALPHA * filteredDerivative + (1-D_ALPHA) * D_rollError; // Apply low-pass filter to derivative
-  float D_rollCorrection = filteredDerivative * D_VALUE;
+  float D_pitchError = (pitchError - previousPitchError) / dt;
+  static float rollFilteredDerivative = 0.0f;
+  static float pitchFilteredDerivative = 0.0f;
+  rollFilteredDerivative = D_ALPHA * rollFilteredDerivative + (1-D_ALPHA) * D_rollError;
+  pitchFilteredDerivative = D_ALPHA * pitchFilteredDerivative + (1-D_ALPHA) * D_pitchError;
+  float D_rollCorrection = rollFilteredDerivative * D_VALUE;
+  float D_pitchCorrection = pitchFilteredDerivative * D_VALUE;
     
   // Store current error for next iteration
   previousRollError = rollError;
+  previousPitchError = pitchError;
 
   // PID sum with times scale (adjustable)
   float rollCorrection = (P_rollCorrection + I_rollCorrection + D_rollCorrection) * 300;
+  float pitchCorrection = (P_pitchCorrection + I_pitchCorrection + D_pitchCorrection) * 300;
 
-  int esc1Speed = constrain(
-    MOTOR_BASE_SPEED + rollCorrection, 
-    MOTOR_BASE_SPEED, 
+  // Apply appropriate control strategy
+  int targetSpeed = constrain(
+    MOTOR_BASE_SPEED + pitchCorrection,
+    MOTOR_BASE_SPEED,
     MOTOR_MAX_SPEED
   );
-
-  esc1.writeMicroseconds(esc1Speed);
+    
+  esc1.writeMicroseconds(targetSpeed);
 
   #if PRINT_CORRECTION
   float _currentTime = millis();
   if (_currentTime - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = _currentTime;
     
-    Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
+    // Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
+    // Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
+    // Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
+    // Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
+    // Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
+    // Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
+    // Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
+    // Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
+    // Serial.print("ESC SPEED "); Serial.print(esc1Speed); Serial.print(" | ");
+    // Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
+
+    Serial.print("PITCH ERROR "); Serial.print(pitchError); Serial.print(" | ");
     Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
-    Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
-    Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
-    Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
-    Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
-    Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
-    Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
-    Serial.print("ESC SPEED "); Serial.print(esc1Speed); Serial.print(" | ");
-    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
+    Serial.print("P ERROR "); Serial.print(P_pitchCorrection); Serial.print(" ");
+    Serial.print("P CORRECTION "); Serial.print(P_pitchCorrection); Serial.print(" | ");
+    Serial.print("I ERROR "); Serial.print(I_pitchError); Serial.print(" ");
+    Serial.print("I CORRECTION "); Serial.print(I_pitchCorrection); Serial.print(" | ");
+    Serial.print("D ERROR "); Serial.print(D_pitchError); Serial.print(" ");
+    Serial.print("D CORRECTION "); Serial.print(D_pitchCorrection); Serial.print(" | ");
+    Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
+    Serial.print("PITCH CORRECTION "); Serial.print(pitchCorrection); Serial.print("\n");
   }
   #endif
 }
 
-// ===== NON-BLOCK ESC SETUP AND UPDATE
+// ===== NON-BLOCK ESC SETUP AND UPDATE =====
 void initializeESCs() {
   escStatus[0] = {ESC_INIT, 0, false, ESC_PIN_1, 0};
 
@@ -487,11 +514,13 @@ void setup() {
     errorBlink(2);
   }
   
+  #if ENABLE_BMP
   // Initialize BMP085
   bmp.initialize();
   if (!bmp.testConnection()) {
     errorBlink(3);
   }
+  #endif
   
   // Initialize DMP
   devStatus = mpu.dmpInitialize();
@@ -501,11 +530,11 @@ void setup() {
   initializeESCs();
   #endif
 
-  mpu.setXGyroOffset(1);
-  mpu.setYGyroOffset(64);
-  mpu.setZGyroOffset(-31);
-  mpu.setXAccelOffset(718);
-  mpu.setYAccelOffset(-1734);
+  mpu.setXGyroOffset(4);
+  mpu.setYGyroOffset(65);
+  mpu.setZGyroOffset(-40);
+  mpu.setXAccelOffset(824);
+  mpu.setYAccelOffset(-1743);
   mpu.setZAccelOffset(972);
   
   if (devStatus == 0) {
@@ -549,8 +578,10 @@ void loop() {
     overflowBlink();
   }
   
+  #if ENABLE_BMP
   // Update BMP readings (non-blocking)
   updateBMP();
+  #endif
 
   #if ENABLE_ESC
   // Update ESC (non-blocking)
