@@ -9,15 +9,16 @@
 #define LED_PIN                 PC13    // Onboard LED
 #define MPU_INT_PIN             PA0     // Interrupt pin for MPU6050
 #define ESC_PIN_1               PA8
+#define ESC_PIN_2               PA9
 
 // ===== CONFIGURATION =====
 #define SERIAL_SPEED            115200  // Serial communication speed
-#define PRINT_INTERVAL          50      // How often to print data (ms)
-#define PRINT_QUATERNION        1       // Enable / disable print quaternion
+#define PRINT_INTERVAL          10      // How often to print data (ms)
+#define PRINT_QUATERNION        0       // Enable / disable print quaternion
 #define PRINT_GRAVITY           0       // Enable / disable print gravity
 #define PRINT_YAW_PITCH_ROLL    0       // Enable / disable print ypr
 #define PRINT_BMP_DATA          0       // Enable / disable print BMP
-#define PRINT_CORRECTION        1       // Enable / disable print PID control correction
+#define PRINT_CORRECTION        0       // Enable / disable print PID control correction
 #define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
@@ -29,16 +30,12 @@
 #define ESC_MAX_ERROR           5       // Error count before locking up
 #define MOTOR_BASE_SPEED        1200    // Base speed for motor to run (min 1200 to spin)
 #define MOTOR_MAX_SPEED         1500    // Max speed for motor (can go up to 2200)
-#define P_VALUE                 0.6f    // Propotional value control
-#define I_VALUE                 0.2f   // Integral value control
-#define I_MAX                   0.6f   // Maximum integral temr
-#define D_VALUE                 0.3f   // Derivative value control
-#define D_ALPHA                 0.8f   // Filter coefficient
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
 BMP085 bmp;
 Servo esc1;
+Servo esc2;
 
 // ===== MPU6050 VARIABLES =====
 bool dmpReady = false;
@@ -92,7 +89,7 @@ struct ESCStatus {
   uint8_t errorCount;
 };
 
-ESCStatus escStatus[1];
+ESCStatus escStatus[2];
 ESCState escSystemState = ESC_INIT;
 unsigned long escLastTime = 0;
 
@@ -105,6 +102,17 @@ float I_pitchError = 0.0f;
 float previousRollError = 0.0f;
 float previousPitchError = 0.0f;
 float lastUpdateErrorTime = 0.0f;
+
+// ===== SERIAL VARIABLES =====
+char cmdBuffer[4];
+int cmdIndex = 0;
+bool cmdReady = false;
+float p_value = 0.2f;
+float i_value = 0.05f;
+float i_max = 0.5f;
+float d_value = 0.05f;
+float d_alpha = 0.5f;
+float finalScale = 100.0f;
 
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
@@ -120,6 +128,72 @@ void recoverESCs();
 void shutdownESCs();
 void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &angle);
 void applyControl();
+void checkSerial();
+void processCommand();
+
+// ===== SERIAL COM =====
+void checkSerial() {
+  while (Serial.available() > 0 && !cmdReady) {
+    char inChar = (char)Serial.read();
+    
+    // Process on newline
+    if (inChar == '\n' || inChar == '\r') {
+      if (cmdIndex > 0) {
+        cmdReady = true;
+      }
+    } else if (cmdIndex < 4 - 1) {
+      cmdBuffer[cmdIndex++] = inChar;
+    }
+  }
+}
+
+void processCommand() {
+  if (!cmdReady) return;
+
+  cmdBuffer[cmdIndex] = '\0';
+
+  char command = cmdBuffer[0];
+  
+  switch (command) {
+    case 'P':
+      p_value += 0.025;
+      break;
+    case 'p':
+      p_value -= 0.025;
+      break;
+    case 'I':
+      i_value += 0.01;
+      break;
+    case 'i':
+      i_value -= 0.01;
+      break;
+    case 'D':
+      d_value += 0.01;
+      break;
+    case 'd':
+      d_value -= 0.01;
+      break;
+    case 'S':
+      finalScale += 10.0;
+      break;
+    case 's':
+      finalScale -= 10.0;
+      break;
+    default:
+      Serial.println("WRONG COMMAND: [P/I/D/S] to increase [p/i/d/s] to decrease");
+      break;
+  }
+
+  Serial.print("P: ");
+  Serial.print(p_value);
+  Serial.print(" I: ");
+  Serial.print(i_value);
+  Serial.print(" D: ");
+  Serial.println(d_value);
+
+  cmdIndex = 0;
+  cmdReady = false;
+}
 
 // ===== INTERRUPT HANDLER =====
 void dmpDataReady() {
@@ -194,59 +268,66 @@ void applyControl() {
   float pitchError = qAxis.y * qAngle;
 
   // Get P Error
-  float P_rollCorrection = rollError * P_VALUE;
-  float P_pitchCorrection = pitchError * P_VALUE;
+  float P_rollCorrection = rollError * p_value;
+  float P_pitchCorrection = pitchError * p_value;
 
   // Get I Error
   I_rollError += rollError * dt;
   I_pitchError += pitchError * dt;
-  I_rollError = constrain(I_rollError, -I_MAX, I_MAX); // Anti-windup
-  I_pitchError = constrain(I_pitchError, -I_MAX, I_MAX); // Anti-windup
-  float I_rollCorrection = I_rollError * I_VALUE;
-  float I_pitchCorrection = I_pitchError * I_VALUE;
+  I_rollError = constrain(I_rollError, -i_max, i_max); // Anti-windup
+  I_pitchError = constrain(I_pitchError, -i_max, i_max); // Anti-windup
+  float I_rollCorrection = I_rollError * i_value;
+  float I_pitchCorrection = I_pitchError * i_value;
 
   // Get D Error
   float D_rollError = (rollError - previousRollError) / dt;
   float D_pitchError = (pitchError - previousPitchError) / dt;
   static float rollFilteredDerivative = 0.0f;
   static float pitchFilteredDerivative = 0.0f;
-  rollFilteredDerivative = D_ALPHA * rollFilteredDerivative + (1-D_ALPHA) * D_rollError;
-  pitchFilteredDerivative = D_ALPHA * pitchFilteredDerivative + (1-D_ALPHA) * D_pitchError;
-  float D_rollCorrection = rollFilteredDerivative * D_VALUE;
-  float D_pitchCorrection = pitchFilteredDerivative * D_VALUE;
+  rollFilteredDerivative = d_alpha * rollFilteredDerivative + (1-d_alpha) * D_rollError;
+  pitchFilteredDerivative = d_alpha * pitchFilteredDerivative + (1-d_alpha) * D_pitchError;
+  float D_rollCorrection = rollFilteredDerivative * d_alpha;
+  float D_pitchCorrection = pitchFilteredDerivative * d_alpha;
     
   // Store current error for next iteration
   previousRollError = rollError;
   previousPitchError = pitchError;
 
   // PID sum with times scale (adjustable)
-  float rollCorrection = (P_rollCorrection + I_rollCorrection + D_rollCorrection) * 300;
-  float pitchCorrection = (P_pitchCorrection + I_pitchCorrection + D_pitchCorrection) * 300;
+  float rollCorrection = (P_rollCorrection + I_rollCorrection + D_rollCorrection) * finalScale;
+  float pitchCorrection = (P_pitchCorrection + I_pitchCorrection + D_pitchCorrection) * finalScale;
 
   // Apply appropriate control strategy
-  int targetSpeed = constrain(
+  int esc1Speed = constrain(
     MOTOR_BASE_SPEED + pitchCorrection,
     MOTOR_BASE_SPEED,
     MOTOR_MAX_SPEED
   );
+
+  int esc2Speed = constrain(
+    MOTOR_BASE_SPEED - pitchCorrection,
+    MOTOR_BASE_SPEED,
+    MOTOR_MAX_SPEED
+  );
     
-  esc1.writeMicroseconds(targetSpeed);
+  esc1.writeMicroseconds(esc1Speed);
+  esc2.writeMicroseconds(esc2Speed);
 
   #if PRINT_CORRECTION
   float _currentTime = millis();
   if (_currentTime - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = _currentTime;
     
-    // Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
-    // Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
-    // Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
-    // Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
-    // Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
-    // Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
-    // Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
-    // Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
-    // Serial.print("ESC SPEED "); Serial.print(esc1Speed); Serial.print(" | ");
-    // Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
+    Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
+    Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
+    Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
+    Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
+    Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
+    Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
+    Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
+    Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
+    // Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
+    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
 
     Serial.print("PITCH ERROR "); Serial.print(pitchError); Serial.print(" | ");
     Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
@@ -256,7 +337,7 @@ void applyControl() {
     Serial.print("I CORRECTION "); Serial.print(I_pitchCorrection); Serial.print(" | ");
     Serial.print("D ERROR "); Serial.print(D_pitchError); Serial.print(" ");
     Serial.print("D CORRECTION "); Serial.print(D_pitchCorrection); Serial.print(" | ");
-    Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
+    // Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
     Serial.print("PITCH CORRECTION "); Serial.print(pitchCorrection); Serial.print("\n");
   }
   #endif
@@ -265,6 +346,7 @@ void applyControl() {
 // ===== NON-BLOCK ESC SETUP AND UPDATE =====
 void initializeESCs() {
   escStatus[0] = {ESC_INIT, 0, false, ESC_PIN_1, 0};
+  escStatus[1] = {ESC_INIT, 0, false, ESC_PIN_2, 0};
 
   escSystemState = ESC_INIT;
   escLastTime = millis();
@@ -272,10 +354,12 @@ void initializeESCs() {
 
 void setupESCs() {
   esc1.attach(escStatus[0].pin);
+  esc2.attach(escStatus[1].pin);
 
   esc1.writeMicroseconds(1000);
+  esc2.writeMicroseconds(1000);
 
-  for (size_t i = 0; i < 1; i++) {
+  for (size_t i = 0; i < 2; i++) {
     escStatus[i].responseLastTime = millis();
     escStatus[i].connected = true;
     escStatus[i].state = ESC_ARMING;
@@ -293,7 +377,7 @@ void recoverESCs() {
   bool allConnected = true;
   bool anyRecovery = false;
 
-  for (size_t i = 0; i < 1; i++) {
+  for (size_t i = 0; i < 2; i++) {
     if (!escStatus[i].connected) {
       allConnected = false;
     }
@@ -303,6 +387,10 @@ void recoverESCs() {
 
       switch (i) {
         case 0:
+          esc1.attach(escStatus[i].pin);
+          esc1.writeMicroseconds(MOTOR_BASE_SPEED);
+          break;
+        case 1:
           esc1.attach(escStatus[i].pin);
           esc1.writeMicroseconds(MOTOR_BASE_SPEED);
           break;
@@ -324,6 +412,7 @@ void recoverESCs() {
 
 void shutdownESCs() {
   esc1.writeMicroseconds(1000);
+  esc2.writeMicroseconds(1000);
 }
 
 void updateESCs() {
@@ -339,7 +428,7 @@ void updateESCs() {
       if (currentMillis - escLastTime >= ESC_ARMING_TIME) {
         escSystemState = ESC_READY;
         escLastTime = currentMillis;
-        for (size_t i = 0; i < 1; i++) {
+        for (size_t i = 0; i < 2; i++) {
           escStatus[i].state = ESC_READY;
           escStatus[i].errorCount = 0;
           escStatus[i].responseLastTime = millis();
@@ -505,7 +594,7 @@ void setup() {
 
   // Initialize communication
   Wire.begin();
-  Wire.setClock(100000);
+  Wire.setClock(400000);
   Serial.begin(SERIAL_SPEED);
   
   // Initialize MPU6050
@@ -530,12 +619,14 @@ void setup() {
   initializeESCs();
   #endif
 
-  mpu.setXGyroOffset(4);
+  #if !CALIBRATE
+  mpu.setXGyroOffset(2);
   mpu.setYGyroOffset(65);
-  mpu.setZGyroOffset(-40);
-  mpu.setXAccelOffset(824);
-  mpu.setYAccelOffset(-1743);
-  mpu.setZAccelOffset(972);
+  mpu.setZGyroOffset(-38);
+  mpu.setXAccelOffset(826);
+  mpu.setYAccelOffset(-1701);
+  mpu.setZAccelOffset(968);
+  #endif
   
   if (devStatus == 0) {
     #if CALIBRATE
@@ -577,6 +668,9 @@ void loop() {
   if (overflowBlinkCount > 0) {
     overflowBlink();
   }
+
+  checkSerial();
+  processCommand();
   
   #if ENABLE_BMP
   // Update BMP readings (non-blocking)
