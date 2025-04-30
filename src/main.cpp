@@ -23,7 +23,6 @@
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
 #define CALIBRATE               0       // Calibaration 0 FALSE 1 TRUE
-#define ENABLE_ESC              1       // Turn on / off ESC control
 #define ENABLE_BMP              0       // Turn on / off BMP
 #define ESC_ARMING_TIME         3000    // Time to wait for ESC to arm
 #define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
@@ -49,6 +48,9 @@ VectorFloat gravity;
 float ypr[3];
 volatile bool mpuInterrupt = false;
 unsigned long lastPrintTime = 0;
+float pitchRate = 0.0f;
+float rollRate = 0.0f;
+float gyroScale;
 
 // ===== LED VARIABLES =====
 unsigned long ledBlinkTime = 0;    // Timestamp for LED state changes
@@ -92,27 +94,38 @@ struct ESCStatus {
 ESCStatus escStatus[2];
 ESCState escSystemState = ESC_INIT;
 unsigned long escLastTime = 0;
+int actualEsc1Speed = 0;
+int actualEsc2Speed = 0;
 
 // ===== CONTROL VARIABLES =====
 Quaternion qTarget;
 VectorFloat qAxis;
 float qAngle;
-float I_rollError = 0.0f;
-float I_pitchError = 0.0f;
-float previousRollError = 0.0f;
-float previousPitchError = 0.0f;
-float lastUpdateErrorTime = 0.0f;
+float lastUpdateControlTime = 0.0f;
+
+// ===== PID VARIABLES =====
+// ----- OUTER LOOP -----
+float p_angleValue = 1.5;
+float i_angleValue = 0.1f;
+float i_angleMax = 10.0f;
+float d_angleValue = 0.0f;
+float I_pitchAngleError = 0.0f;
+float previousPitchAngleError = 0.0f;
+// ----- INNER LOOP -----
+float p_rateValue = 0.8f;
+float i_rateValue = 0.2f;
+float i_rateMax = 50.0f;
+float d_rateValue = 0.05f;
+float d_rateAlpha = 0.5;
+float I_pitchRateError = 0.0f;
+float previousPitchRateError = 0.0f;
+float backCalculationGain = 0.1f;
 
 // ===== SERIAL VARIABLES =====
 char cmdBuffer[4];
 int cmdIndex = 0;
 bool cmdReady = false;
-float p_value = 0.2f;
-float i_value = 0.05f;
-float i_max = 1.0f;
-float d_value = 0.05f;
-float d_alpha = 0.5f;
-float finalScale = 100.0f;
+bool enableESC = true;
 
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
@@ -130,6 +143,7 @@ void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &ang
 void applyControl();
 void checkSerial();
 void processCommand();
+void readGyro();
 
 // ===== SERIAL COM =====
 void checkSerial() {
@@ -156,40 +170,29 @@ void processCommand() {
   
   switch (command) {
     case 'P':
-      p_value += 0.025;
       break;
     case 'p':
-      p_value -= 0.025;
       break;
     case 'I':
-      i_value += 0.01;
       break;
     case 'i':
-      i_value -= 0.01;
       break;
     case 'D':
-      d_value += 0.01;
       break;
     case 'd':
-      d_value -= 0.01;
       break;
     case 'S':
-      finalScale += 10.0;
       break;
     case 's':
-      finalScale -= 10.0;
+      break;
+    case 'K':
+    case 'k':
+      enableESC = !enableESC;
       break;
     default:
       Serial.println("WRONG COMMAND: [P/I/D/S] to increase [p/i/d/s] to decrease");
       break;
   }
-
-  Serial.print("P: ");
-  Serial.print(p_value);
-  Serial.print(" I: ");
-  Serial.print(i_value);
-  Serial.print(" D: ");
-  Serial.println(d_value);
 
   cmdIndex = 0;
   cmdReady = false;
@@ -246,15 +249,30 @@ void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &ang
   }
 }
 
+void readGyro() {
+  int16_t gx, gy, gz;
+  mpu.getRotation(&gx, &gy, &gz);
+  float _pitchRate = (float)gy / gyroScale;
+
+  // Apply low pass filter
+  static float filteredPitchRateState = 0.0f;
+  filteredPitchRateState = 0.7 * filteredPitchRateState + 0.3 * _pitchRate;
+  pitchRate = filteredPitchRateState;
+}
+
 void applyControl() {
   float currentTime = millis() / 1000.0f;
-  float dt = currentTime - lastUpdateErrorTime;
-  lastUpdateErrorTime = currentTime;
+  float dt = currentTime - lastUpdateControlTime;
+  lastUpdateControlTime = currentTime;
 
-  if (dt > 0.1f) {
-    dt = 0.01f;  // Default to typical refresh rate
+  if (dt > 0.1f || dt <= 0.0f) {
+    dt = 0.01f;
   }
 
+  // Get latest gyro rate
+  readGyro();
+
+  // ---- OUTER LOOP ----
   // Quaternion process to get rotaion difference from target
   Quaternion conjugate = q.getConjugate();
   conjugate.normalize();
@@ -264,79 +282,97 @@ void applyControl() {
   quaternionToAxisAngle(qError, qAxis, qAngle);
 
   // Calculate the error
-  float rollError = qAxis.x * qAngle;
-  float pitchError = qAxis.y * qAngle;
+  float pitchAngleError = qAxis.y * qAngle;
 
-  // Get P Error
-  float P_rollCorrection = rollError * p_value;
-  float P_pitchCorrection = pitchError * p_value;
+  // P Angle Term
+  float P_angle = pitchAngleError * p_angleValue;
 
-  // Get I Error
-  I_rollError += rollError * dt;
-  I_pitchError += pitchError * dt;
-  I_rollError = constrain(I_rollError, -i_max, i_max); // Anti-windup
-  I_pitchError = constrain(I_pitchError, -i_max, i_max); // Anti-windup
-  float I_rollCorrection = I_rollError * i_value;
-  float I_pitchCorrection = I_pitchError * i_value;
+  // I Angle Term
+  I_pitchAngleError += pitchAngleError * i_angleValue * dt;
+  I_pitchAngleError = constrain(I_pitchAngleError, -i_angleMax, i_angleMax);
+  float I_angle = I_pitchAngleError;
 
-  // Get D Error
-  float D_rollError = (rollError - previousRollError) / dt;
-  float D_pitchError = (pitchError - previousPitchError) / dt;
-  static float rollFilteredDerivative = 0.0f;
-  static float pitchFilteredDerivative = 0.0f;
-  rollFilteredDerivative = d_alpha * rollFilteredDerivative + (1-d_alpha) * D_rollError;
-  pitchFilteredDerivative = d_alpha * pitchFilteredDerivative + (1-d_alpha) * D_pitchError;
-  float D_rollCorrection = D_rollError * d_value;
-  float D_pitchCorrection = D_pitchError * d_value;
+  // D Angle Term
+  // Often not used because we calcuated rate of change using rate velocity in inner loop
+  float D_angle = 0.0f;
+  if (d_angleValue > 0.0f) {
+    D_angle = (pitchAngleError - previousPitchAngleError) / dt;
+    static float filteredD_angle = 0.0f;
+    filteredD_angle = 0.5 * filteredD_angle + 0.5 * D_angle;
+    D_angle = filteredD_angle * d_angleValue;
+  }
+  previousPitchAngleError = pitchAngleError;
 
-  // Store current error for next iteration
-  previousRollError = rollError;
-  previousPitchError = pitchError;
+  float targetPitchRate = P_angle + I_angle + D_angle;
 
-  // PID sum with times scale (adjustable)
-  float rollCorrection = (P_rollCorrection + I_rollCorrection + D_rollCorrection) * finalScale;
-  float pitchCorrection = (P_pitchCorrection + I_pitchCorrection + D_pitchCorrection) * finalScale;
+  // ----- INNER LOOP -----
+  float pitchRateError = targetPitchRate - pitchRate;
 
-  // Apply appropriate control strategy
-  int esc1Speed = constrain(
-    MOTOR_BASE_SPEED + pitchCorrection,
-    MOTOR_BASE_SPEED,
-    MOTOR_MAX_SPEED
-  );
+  // P Rate Term
+  float P_rate = pitchRateError * p_rateValue;
 
-  int esc2Speed = constrain(
-    MOTOR_BASE_SPEED - pitchCorrection,
-    MOTOR_BASE_SPEED,
-    MOTOR_MAX_SPEED
-  );
-    
-  esc1.writeMicroseconds(esc1Speed);
-  esc2.writeMicroseconds(esc2Speed);
+  // I Rate Term
+  float I_rateContribution = pitchRateError * dt * i_rateValue;
+  float I_potentialRate = I_pitchRateError + I_rateContribution;
+  I_potentialRate = constrain(I_potentialRate, -i_rateMax, i_rateMax);
+  float I_rate = I_potentialRate;
+  
+  // D Rate Term
+  float D_rate = (pitchRateError - previousPitchRateError) / dt;
+  static float filteredD_rate = 0.0f;
+  filteredD_rate = d_rateAlpha * filteredD_rate + (1.0f - d_rateAlpha) * D_rate;
+  D_rate = filteredD_rate * d_rateValue;
+
+  previousPitchRateError = pitchRateError;
+  
+  // Desired correction for motor (before saturation)
+  float desiredCorrection = P_rate + I_rate + D_rate;
+  int desiredEsc1Speed = MOTOR_BASE_SPEED + desiredCorrection;
+  int desiredEsc2Speed = MOTOR_BASE_SPEED - desiredCorrection;
+
+  actualEsc1Speed = constrain(desiredEsc1Speed, MOTOR_BASE_SPEED, MOTOR_MAX_SPEED);
+  actualEsc2Speed = constrain(desiredEsc2Speed, MOTOR_BASE_SPEED, MOTOR_MAX_SPEED);
+
+  // Anti-Windup for I Rate Term
+  // Check if its both of some of the speed is exceeding
+  float correctionSaturation = (actualEsc1Speed - actualEsc2Speed) - (desiredEsc1Speed - desiredEsc2Speed); 
+  if (abs(correctionSaturation) > 0.1f) {
+    float maxControlRange = 2.0 * (MOTOR_BASE_SPEED - MOTOR_MAX_SPEED);
+    if (maxControlRange == 0.0f) maxControlRange = 1.0f; // Avoid division by zero
+
+    // Get adjustment value (???)
+    float adjustment = (I_rateContribution * backCalculationGain * abs(correctionSaturation)) / maxControlRange;
+    I_pitchRateError += I_rateContribution - adjustment;
+
+    // Re-clamp the pitch error
+    I_pitchRateError = constrain(I_pitchRateError, -i_rateMax, i_rateMax);
+  } else {
+    I_pitchRateError = I_potentialRate;
+  }
+
+  if (enableESC) {
+    esc1.writeMicroseconds(actualEsc1Speed);
+    esc2.writeMicroseconds(actualEsc2Speed);
+  } else {
+    shutdownESCs();
+  }
 
   #if PRINT_CORRECTION
   float _currentTime = millis();
   if (_currentTime - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = _currentTime;
-    
-    Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
-    Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
-    Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
-    Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
-    Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
-    Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
-    Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
-    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection);
-    Serial.print("\n");
-
-    Serial.print("PITCH ERROR "); Serial.print(pitchError); Serial.print(" | ");
-    Serial.print("P ERROR "); Serial.print(P_pitchCorrection); Serial.print(" ");
-    Serial.print("P CORRECTION "); Serial.print(P_pitchCorrection); Serial.print(" | ");
-    Serial.print("I ERROR "); Serial.print(I_pitchError); Serial.print(" ");
-    Serial.print("I CORRECTION "); Serial.print(I_pitchCorrection); Serial.print(" | ");
-    Serial.print("D ERROR "); Serial.print(D_pitchError); Serial.print(" ");
-    Serial.print("D CORRECTION "); Serial.print(D_pitchCorrection); Serial.print(" | ");
-    Serial.print("PITCH CORRECTION "); Serial.print(pitchCorrection); 
-    Serial.print("\n");
+    Serial.print("PitchAngErr: "); Serial.print(pitchAngleError); Serial.print(" | ");
+    Serial.print("TargetRate: "); Serial.print(targetPitchRate); Serial.print(" | ");
+    Serial.print("PitchRate: "); Serial.print(pitchRate); Serial.print(" | ");
+    Serial.print("PitchRateErr: "); Serial.print(pitchRateError); Serial.print(" | ");
+    Serial.print("P_rate: "); Serial.print(P_rate); Serial.print(" | ");
+    Serial.print("I_rate: "); Serial.print(I_rate); Serial.print(" | ");
+    // Serial.print("I_raw: "); Serial.print(I_pitchRateError); Serial.print(" | "); // Raw integrator state
+    Serial.print("D_rate: "); Serial.print(D_rate); Serial.print(" | ");
+    Serial.print("DesiredCorr: "); Serial.print(desiredCorrection); Serial.print(" | ");
+    Serial.print("ESC1: "); Serial.print(actualEsc1Speed); Serial.print(" | ");
+    Serial.print("ESC2: "); Serial.print(actualEsc2Speed);
+    Serial.println();
   }
   #endif
 }
@@ -493,6 +529,7 @@ void updateBMP() {
 void processMPU() {
   // Reset interrupt flag
   mpuInterrupt = false;
+
   
   // Get MPU status
   mpuIntStatus = mpu.getIntStatus();
@@ -532,7 +569,8 @@ void processMPU() {
   // Get quaternion, gravity and Yaw Pitch Roll
   mpu.dmpGetQuaternion(&q, fifoBuffer);
   q.normalize();
-  #if PRINT_GRAVITY
+
+  #if PRINT_GRAVITY || PRINT_YAW_PITCH_ROLL
   mpu.dmpGetGravity(&gravity, &q);
   mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
   #endif
@@ -600,9 +638,12 @@ void setup() {
   if (!mpu.testConnection()) {
     errorBlink(2);
   }
+
+  // Set MPU gyro scale
+  mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+  gyroScale = 131.0;
   
-  #if ENABLE_BMP
-  // Initialize BMP085
+  #if ENABLE_BMP  // Initialize BMP085
   bmp.initialize();
   if (!bmp.testConnection()) {
     errorBlink(3);
@@ -613,9 +654,7 @@ void setup() {
   devStatus = mpu.dmpInitialize();
 
   // Initialize ESCs
-  #if ENABLE_ESC
   initializeESCs();
-  #endif
 
   #if !CALIBRATE
   mpu.setXGyroOffset(2);
@@ -656,6 +695,8 @@ void setup() {
     // ERROR!
     errorBlink(4);
   }
+
+  lastUpdateControlTime = millis() / 1000.0f;
 }
 
 // ===== MAIN LOOP =====
@@ -675,10 +716,8 @@ void loop() {
   updateBMP();
   #endif
 
-  #if ENABLE_ESC
   // Update ESC (non-blocking)
   updateESCs();
-  #endif
 
   // Process MPU data if available
   if (mpuInterrupt || fifoCount >= packetSize) {
