@@ -18,7 +18,7 @@
 #define PRINT_GRAVITY           0       // Enable / disable print gravity
 #define PRINT_YAW_PITCH_ROLL    0       // Enable / disable print ypr
 #define PRINT_BMP_DATA          0       // Enable / disable print BMP
-#define PRINT_CORRECTION        0       // Enable / disable print PID control correction
+#define PRINT_CORRECTION        1       // Enable / disable print PID control correction
 #define OVERFLOW_LED_ON_TIME    100     // LED on time in ms
 #define OVERFLOW_LED_OFF_TIME   100     // LED off time in ms
 #define OVERFLOW_BLINK_COUNT    5       // Number of blinks for overflow indicator
@@ -109,7 +109,7 @@ int cmdIndex = 0;
 bool cmdReady = false;
 float p_value = 0.2f;
 float i_value = 0.05f;
-float i_max = 0.5f;
+float i_max = 1.0f;
 float d_value = 0.05f;
 float d_alpha = 0.5f;
 float finalScale = 100.0f;
@@ -286,9 +286,9 @@ void applyControl() {
   static float pitchFilteredDerivative = 0.0f;
   rollFilteredDerivative = d_alpha * rollFilteredDerivative + (1-d_alpha) * D_rollError;
   pitchFilteredDerivative = d_alpha * pitchFilteredDerivative + (1-d_alpha) * D_pitchError;
-  float D_rollCorrection = rollFilteredDerivative * d_alpha;
-  float D_pitchCorrection = pitchFilteredDerivative * d_alpha;
-    
+  float D_rollCorrection = D_rollError * d_value;
+  float D_pitchCorrection = D_pitchError * d_value;
+
   // Store current error for next iteration
   previousRollError = rollError;
   previousPitchError = pitchError;
@@ -319,26 +319,24 @@ void applyControl() {
     lastPrintTime = _currentTime;
     
     Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
-    Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
     Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
     Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
     Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
     Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
     Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
     Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
-    // Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
-    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection); Serial.print("\n");
+    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection);
+    Serial.print("\n");
 
     Serial.print("PITCH ERROR "); Serial.print(pitchError); Serial.print(" | ");
-    Serial.print("dt "); Serial.print(dt); Serial.print(" | ");
     Serial.print("P ERROR "); Serial.print(P_pitchCorrection); Serial.print(" ");
     Serial.print("P CORRECTION "); Serial.print(P_pitchCorrection); Serial.print(" | ");
     Serial.print("I ERROR "); Serial.print(I_pitchError); Serial.print(" ");
     Serial.print("I CORRECTION "); Serial.print(I_pitchCorrection); Serial.print(" | ");
     Serial.print("D ERROR "); Serial.print(D_pitchError); Serial.print(" ");
     Serial.print("D CORRECTION "); Serial.print(D_pitchCorrection); Serial.print(" | ");
-    // Serial.print("ESC SPEED "); Serial.print(targetSpeed); Serial.print(" | ");
-    Serial.print("PITCH CORRECTION "); Serial.print(pitchCorrection); Serial.print("\n");
+    Serial.print("PITCH CORRECTION "); Serial.print(pitchCorrection); 
+    Serial.print("\n");
   }
   #endif
 }
