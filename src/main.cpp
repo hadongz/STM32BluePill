@@ -107,12 +107,13 @@ float lastUpdateErrorTime = 0.0f;
 char cmdBuffer[4];
 int cmdIndex = 0;
 bool cmdReady = false;
-float p_value = 0.2f;
-float i_value = 0.05f;
+float p_value = 1.0f;
+float i_value = 0.15f;
 float i_max = 1.0f;
-float d_value = 0.05f;
+float d_value = 0.25f;
 float d_alpha = 0.5f;
-float finalScale = 100.0f;
+float finalScale = 200.0f;
+bool enableESC = false;
 
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
@@ -179,6 +180,9 @@ void processCommand() {
     case 's':
       finalScale -= 10.0;
       break;
+    case 'K':
+    case 'k':
+      enableESC = !enableESC;
     default:
       Serial.println("WRONG COMMAND: [P/I/D/S] to increase [p/i/d/s] to decrease");
       break;
@@ -435,7 +439,11 @@ void updateESCs() {
       break;
     case ESC_READY:
       if (!dmpReady) return;
-      applyControl();
+      if (enableESC) {
+        applyControl();
+      } else {
+        shutdownESCs();
+      }
       break;
     case ESC_RECOVERY:
       recoverESCs();
