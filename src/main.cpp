@@ -28,7 +28,7 @@
 #define ESC_RECOVERY_TIMEOUT    500     // Interval for ESC recovery
 #define ESC_MAX_ERROR           5       // Error count before locking up
 #define MOTOR_BASE_SPEED        1200    // Base speed for motor to run (min 1200 to spin)
-#define MOTOR_MAX_SPEED         1500    // Max speed for motor (can go up to 2200)
+#define MOTOR_MAX_SPEED         1700    // Max speed for motor (can go up to 2200)
 
 // ===== SENSOR INSTANCES =====
 MPU6050 mpu;
@@ -112,20 +112,20 @@ float d_angleValue = 0.0f;
 float I_pitchAngleError = 0.0f;
 float previousPitchAngleError = 0.0f;
 // ----- INNER LOOP -----
-float p_rateValue = 0.8f;
-float i_rateValue = 0.2f;
+float p_rateValue = 2.0f;
+float i_rateValue = 0.3f;
 float i_rateMax = 50.0f;
-float d_rateValue = 0.05f;
+float d_rateValue = 0.08f;
 float d_rateAlpha = 0.5;
+float backCalculationGain = 0.2f;
 float I_pitchRateError = 0.0f;
 float previousPitchRateError = 0.0f;
-float backCalculationGain = 0.1f;
 
 // ===== SERIAL VARIABLES =====
 char cmdBuffer[4];
 int cmdIndex = 0;
 bool cmdReady = false;
-bool enableESC = true;
+bool enableESC = false;
 
 // ===== FUNCTION PROTOTYPES =====
 void dmpDataReady();
@@ -350,12 +350,8 @@ void applyControl() {
     I_pitchRateError = I_potentialRate;
   }
 
-  if (enableESC) {
-    esc1.writeMicroseconds(actualEsc1Speed);
-    esc2.writeMicroseconds(actualEsc2Speed);
-  } else {
-    shutdownESCs();
-  }
+  esc1.writeMicroseconds(actualEsc1Speed);
+  esc2.writeMicroseconds(actualEsc2Speed);
 
   #if PRINT_CORRECTION
   float _currentTime = millis();
@@ -365,10 +361,10 @@ void applyControl() {
     Serial.print("TargetRate: "); Serial.print(targetPitchRate); Serial.print(" | ");
     Serial.print("PitchRate: "); Serial.print(pitchRate); Serial.print(" | ");
     Serial.print("PitchRateErr: "); Serial.print(pitchRateError); Serial.print(" | ");
-    Serial.print("P_rate: "); Serial.print(P_rate); Serial.print(" | ");
+    // Serial.print("P_rate: "); Serial.print(P_rate); Serial.print(" | ");
     Serial.print("I_rate: "); Serial.print(I_rate); Serial.print(" | ");
     // Serial.print("I_raw: "); Serial.print(I_pitchRateError); Serial.print(" | "); // Raw integrator state
-    Serial.print("D_rate: "); Serial.print(D_rate); Serial.print(" | ");
+    // Serial.print("D_rate: "); Serial.print(D_rate); Serial.print(" | ");
     Serial.print("DesiredCorr: "); Serial.print(desiredCorrection); Serial.print(" | ");
     Serial.print("ESC1: "); Serial.print(actualEsc1Speed); Serial.print(" | ");
     Serial.print("ESC2: "); Serial.print(actualEsc2Speed);
@@ -471,7 +467,11 @@ void updateESCs() {
       break;
     case ESC_READY:
       if (!dmpReady) return;
-      applyControl();
+      if (enableESC) {
+        applyControl();
+      } else {
+        shutdownESCs();
+      }
       break;
     case ESC_RECOVERY:
       recoverESCs();
