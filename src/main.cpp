@@ -251,9 +251,9 @@ void quaternionToAxisAngle(const Quaternion &quat, VectorFloat &axis, float &ang
 }
 
 void applyControl() {
-  float currentTime = millis() / 1000.0f;
-  float dt = currentTime - lastUpdateErrorTime;
-  lastUpdateErrorTime = currentTime;
+  float now = micros();
+  float dt = (now - lastUpdateErrorTime) / 1000000.0f;
+  lastUpdateErrorTime = now;
 
   if (dt > 0.1f) {
     dt = 0.01f;  // Default to typical refresh rate
@@ -290,8 +290,8 @@ void applyControl() {
   static float pitchFilteredDerivative = 0.0f;
   rollFilteredDerivative = d_alpha * rollFilteredDerivative + (1-d_alpha) * D_rollError;
   pitchFilteredDerivative = d_alpha * pitchFilteredDerivative + (1-d_alpha) * D_pitchError;
-  float D_rollCorrection = D_rollError * d_value;
-  float D_pitchCorrection = D_pitchError * d_value;
+  float D_rollCorrection = rollFilteredDerivative * d_value;
+  float D_pitchCorrection = pitchFilteredDerivative * d_value;
 
   // Store current error for next iteration
   previousRollError = rollError;
