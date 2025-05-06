@@ -107,12 +107,12 @@ float lastUpdateErrorTime = 0.0f;
 char cmdBuffer[4];
 int cmdIndex = 0;
 bool cmdReady = false;
-float p_value = 1.0f;
-float i_value = 0.15f;
+float p_value = 0.9f;
+float i_value = 0.25f;
 float i_max = 1.0f;
-float d_value = 0.25f;
+float d_value = 0.3f;
 float d_alpha = 0.5f;
-float finalScale = 200.0f;
+float finalScale = 250.0f;
 bool enableESC = false;
 
 // ===== FUNCTION PROTOTYPES =====
@@ -322,15 +322,15 @@ void applyControl() {
   if (_currentTime - lastPrintTime >= PRINT_INTERVAL) {
     lastPrintTime = _currentTime;
     
-    Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
-    Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
-    Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
-    Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
-    Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
-    Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
-    Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
-    Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection);
-    Serial.print("\n");
+    // Serial.print("ROLL ERROR "); Serial.print(rollError); Serial.print(" | ");
+    // Serial.print("P ERROR "); Serial.print(P_rollCorrection); Serial.print(" ");
+    // Serial.print("P CORRECTION "); Serial.print(P_rollCorrection); Serial.print(" | ");
+    // Serial.print("I ERROR "); Serial.print(I_rollError); Serial.print(" ");
+    // Serial.print("I CORRECTION "); Serial.print(I_rollCorrection); Serial.print(" | ");
+    // Serial.print("D ERROR "); Serial.print(D_rollError); Serial.print(" ");
+    // Serial.print("D CORRECTION "); Serial.print(D_rollCorrection); Serial.print(" | ");
+    // Serial.print("ROLL CORRECTION "); Serial.print(rollCorrection);
+    // Serial.print("\n");
 
     Serial.print("PITCH ERROR "); Serial.print(pitchError); Serial.print(" | ");
     Serial.print("P ERROR "); Serial.print(P_pitchCorrection); Serial.print(" ");
